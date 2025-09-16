@@ -530,6 +530,15 @@ class ImageDownloader:
                 logger.debug("链接或文章URL为空，跳过转换")
                 return None
 
+            # 首先检查是否是纯锚点链接（页面内跳转）
+            import re
+            if href.startswith('#'):
+                # 纯锚点链接，直接返回锚点
+                anchor_match = re.search(r'^#(.+)$', href)
+                if anchor_match:
+                    logger.debug(f"转换为页面内锚点: #{anchor_match.group(1)}")
+                    return ('anchor', anchor_match.group(1))
+
             # 检查是否是同一网站的链接（包括相对路径）
             is_same_site = (
                 'cybozudev.kf5.com' in href or  # 完整URL
@@ -750,7 +759,7 @@ class ImageDownloader:
                             # 页面内锚点链接 - 保留原样以支持页面内导航
                             a_tag = soup.new_tag('a')
                             a_tag.string = link_text
-                            a_tag['href'] = link_data  # link_data是锚点ID
+                            a_tag['href'] = f'#{link_data}'  # 添加#前缀
                         elif link_type == 'article':
                             # 同站点文章链接，使用文章ID引用格式（避免破坏SPA样式）
                             a_tag = soup.new_tag('a')
@@ -768,37 +777,23 @@ class ImageDownloader:
                         logger.debug(f"保留锚点链接: {href}")
                         # 不做任何修改，保持原有的锚点链接
                     else:
-                        # 检查是否是license文件链接 - 应该转换为GitHub项目链接
+                        # 检查是否是license文件链接 - 保持为外部链接，不下载
                         is_license_file = (
                             'license' in href.lower() and 
-                            ('.txt' in href.lower() or '.md' in href.lower()) and
-                            ('attachments/download' in href or 'files.kf5.com' in href)
+                            ('.txt' in href.lower() or '.md' in href.lower())
                         )
                         
                         if is_license_file:
-                            # license文件转换为GitHub项目链接的占位符
-                            logger.debug(f"检测到license文件链接，转换为GitHub项目链接: {href}")
+                            # license文件保持为外部链接，不尝试下载
+                            logger.debug(f"检测到license文件链接，保持为外部链接: {href}")
                             
-                            # 尝试从链接文本中提取项目信息
-                            github_url = self._extract_github_url_from_license(href, link_text)
-                            
-                            if github_url:
-                                # 创建指向GitHub项目的外部链接
-                                link['href'] = github_url
-                                link['class'] = 'external-link'
-                                link['target'] = '_blank'
-                                link['rel'] = 'noopener noreferrer'
-                                # 更新链接文本，添加GitHub图标
-                                link.string = f"🔗 {link_text} (GitHub项目)"
-                                logger.debug(f"license文件转换为GitHub链接: {href} -> {github_url}")
-                            else:
-                                # 无法确定GitHub项目，转换为纯文本
-                                span = soup.new_tag('span')
-                                span.string = f"📄 {link_text} (项目许可证)"
-                                span['class'] = 'license-text'
-                                span['style'] = 'color: #6b7280; font-weight: normal;'
-                                link.replace_with(span)
-                                logger.debug(f"license文件转换为纯文本: {href}")
+                            # 设置为外部链接样式
+                            link['class'] = 'external-link'
+                            link['target'] = '_blank'
+                            link['rel'] = 'noopener noreferrer'
+                            # 保持原始链接和文本，只添加外部链接图标
+                            link.string = f"🔗 {link_text}"
+                            logger.debug(f"license文件设置为外部链接: {href}")
                         else:
                             # 检查是否是其他附件下载链接
                             is_attachment = (
@@ -987,10 +982,9 @@ class HTMLGenerator:
         # 需要额外的一层"../"来回到html目录的上一级（output_tiny根目录）
         base_path = "../" * (category_depth + 1)
         
-        # 由于HTML使用了base标签指向output根目录，
-        # 所有路径都应该直接基于output目录，不需要../前缀
-        index_link = "index.html"
-        css_path = "css/article.css"
+        # CSS路径直接使用相对路径，不依赖base标签
+        index_link = base_path + "index.html"
+        css_path = base_path + "css/article.css"
         
         # 准备元数据
         metadata = {
@@ -1014,7 +1008,6 @@ class HTMLGenerator:
         final_html = final_html.replace('{content}', str(html_content))
         final_html = final_html.replace('{index_link}', index_link)
         final_html = final_html.replace('{css_path}', css_path)
-        final_html = final_html.replace('{base_path}', base_path)
         
         # 保存HTML文件
         with open(html_file, 'w', encoding='utf-8') as f:
@@ -1031,7 +1024,6 @@ class HTMLGenerator:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title} - kintone开发者文档</title>
-    <base href="{base_path}">
     <link rel="stylesheet" href="{css_path}">
     <!-- Prism syntax highlighting -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism.min.css">

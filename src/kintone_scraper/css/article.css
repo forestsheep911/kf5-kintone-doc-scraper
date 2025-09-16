@@ -450,6 +450,11 @@ body {
     margin: 20px 0;
 }
 
+/* 兼容原始网站的padding类 - 提高特异性以覆盖ul.anchor-link */
+ul.list-paddingleft-2, .list-paddingleft-2 {
+    padding-left: 30px !important;
+}
+
 .anchor-link li, ul.anchor-link li {
     margin: 8px 0;
     padding: 0;
