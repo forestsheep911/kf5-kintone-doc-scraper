@@ -33,6 +33,7 @@ kintone-scraper/
 ├── output/                     # 完整抓取输出（保留）
 ├── output_test/                # 测试模式输出
 ├── output_small/               # 小批量模式输出
+├── output_tiny/                # 微型模式输出
 ├── output_full/                # 全量模式输出
 ├── pyproject.toml             # Poetry配置
 ├── README.md                  # 项目说明
@@ -67,6 +68,13 @@ poetry run python scripts/run_scraper.py test
 # 小批量模式 - 抓取部分文档  
 # 输出目录: output_small/
 poetry run python scripts/run_scraper.py small
+
+# 微型模式 - 每个section抓取1篇文章（快速测试用）
+# 输出目录: output_tiny/
+poetry run python scripts/run_scraper.py tiny
+
+# 微型模式（API驱动）- 测试API模式的分类逻辑
+poetry run python scripts/run_scraper.py tiny --use-api
 
 # 全量模式 - 抓取所有文档
 # 输出目录: output_full/

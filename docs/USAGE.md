@@ -20,6 +20,12 @@ poetry run python scripts/run_scraper.py test
 # 小型模式，输出到 output_small/
 poetry run python scripts/run_scraper.py small
 
+# 微型模式（每个section 1篇文章），输出到 output_tiny/
+poetry run python scripts/run_scraper.py tiny
+
+# 微型模式（API驱动，测试分类逻辑），输出到 output_tiny/
+poetry run python scripts/run_scraper.py tiny --use-api
+
 # 完整模式，输出到 output_full/
 poetry run python scripts/run_scraper.py full
 ```

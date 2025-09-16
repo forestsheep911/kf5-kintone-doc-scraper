@@ -510,18 +510,9 @@ class ImageDownloader:
         soup = BeautifulSoup(html_content, 'html.parser')
         downloaded_files = []
 
-        # 计算到images目录的相对路径
-        def calculate_image_path():
-            if not article_category:
-                return "../images"
-            
-            # 计算分类的层级深度
-            category_parts = article_category.split('/')
-            # 每个分类层级需要一个 "../"
-            depth = len(category_parts)
-            return "../" * (depth + 1) + "images"
-        
-        images_relative_path = calculate_image_path()
+        # 由于HTML使用了base标签指向output根目录，
+        # 图片路径应该直接基于output目录，不需要../前缀
+        images_relative_path = "images"
 
         # 辅助函数：将同站点文章链接转换为本地链接
         def convert_to_local_link(href: str) -> Optional[tuple]:
@@ -600,62 +591,45 @@ class ImageDownloader:
                         video_id = None
                         video_info = f"av{aid}"
                     
-                    if self.bilibili_mode == "iframe":
-                        # 嵌入模式：生成iframe播放器
-                        new_iframe = soup.new_tag('div')
-                        new_iframe['class'] = 'bilibili-video-wrapper'
-                        new_iframe['style'] = 'position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; margin: 16px 0;'
-                        
-                        # 构建嵌入URL
-                        if video_id and aid:
-                            embed_url = f"//player.bilibili.com/player.html?isOutside=true&aid={aid}&bvid={video_id}&cid=1&p=1"
-                        elif video_id:
-                            embed_url = f"//player.bilibili.com/player.html?isOutside=true&bvid={video_id}&cid=1&p=1"
-                        else:
-                            embed_url = f"//player.bilibili.com/player.html?isOutside=true&aid={aid}&cid=1&p=1"
-                        
-                        player_iframe = soup.new_tag('iframe')
-                        player_iframe['src'] = embed_url
-                        player_iframe['scrolling'] = 'no'
-                        player_iframe['border'] = '0'
-                        player_iframe['frameborder'] = 'no'
-                        player_iframe['framespacing'] = '0'
-                        player_iframe['allowfullscreen'] = 'true'
-                        player_iframe['style'] = 'position: absolute; top: 0; left: 0; width: 100%; height: 100%;'
-                        
-                        # 添加视频标题
-                        title_p = soup.new_tag('p')
-                        title_p.string = f"📺 B站视频: {video_info}"
-                        title_p['style'] = 'margin-bottom: 8px; font-weight: bold; color: #333;'
-                        
-                        new_iframe.append(player_iframe)
-                        container = soup.new_tag('div')
-                        container.append(title_p)
-                        container.append(new_iframe)
-                        
-                        iframe.replace_with(container)
-                        logger.debug(f"替换B站iframe为嵌入播放器: {video_info}")
+                    # 构建视频URL
+                    if video_id:
+                        video_url = f"https://www.bilibili.com/video/{video_id}"
                     else:
-                        # 链接模式：生成跳转链接（默认）
-                        if video_id:
-                            video_url = f"https://www.bilibili.com/video/{video_id}"
-                        else:
-                            video_url = f"https://www.bilibili.com/video/av{aid}"
-                        
-                        link_tag = soup.new_tag('p')
-                        link_tag.string = f"📺 B站视频: {video_info} - "
-                        
-                        a_tag = soup.new_tag('a')
-                        a_tag.string = "点击观看"
-                        a_tag['href'] = video_url
-                        a_tag['target'] = "_blank"
-                        a_tag['rel'] = "noopener noreferrer"
-                        a_tag['class'] = "external-link"
-                        a_tag['style'] = "color: #00a1d6; text-decoration: underline;"
-                        
-                        link_tag.append(a_tag)
-                        iframe.replace_with(link_tag)
-                        logger.debug(f"替换B站iframe为直接视频链接: {video_info} -> {video_url}")
+                        video_url = f"https://www.bilibili.com/video/av{aid}"
+                    
+                    # 创建友好的B站视频链接
+                    container = soup.new_tag('div')
+                    container['class'] = 'bilibili-video-link'
+                    container['style'] = 'margin: 16px 0; padding: 16px; border: 2px solid #00a1d6; border-radius: 8px; background-color: #f0f8ff; text-align: center;'
+                    
+                    # 视频图标和标题
+                    title_p = soup.new_tag('p')
+                    title_p['style'] = 'margin: 0 0 8px 0; font-size: 16px; font-weight: bold; color: #333;'
+                    title_p.string = f"📺 B站视频: {video_info}"
+                    
+                    # 提示文字和链接
+                    link_p = soup.new_tag('p')
+                    link_p['style'] = 'margin: 8px 0 0 0; font-size: 14px; color: #666;'
+                    
+                    hint_text = soup.new_tag('span')
+                    hint_text.string = "请前往B站观看：  "
+                    
+                    a_tag = soup.new_tag('a')
+                    a_tag.string = f"点击观看 {video_info} →"
+                    a_tag['href'] = video_url
+                    a_tag['target'] = "_blank"
+                    a_tag['rel'] = "noopener noreferrer"
+                    a_tag['class'] = "bilibili-link"
+                    a_tag['style'] = "color: #00a1d6; text-decoration: none; font-weight: bold; font-size: 15px; padding: 4px 8px; border-radius: 4px; background-color: rgba(0, 161, 214, 0.1);"
+                    
+                    link_p.append(hint_text)
+                    link_p.append(a_tag)
+                    
+                    container.append(title_p)
+                    container.append(link_p)
+                    
+                    iframe.replace_with(container)
+                    logger.debug(f"替换B站iframe为友好链接: {video_info} -> {video_url}")
 
         # 1. 处理图片
         img_tags = soup.find_all('img')
@@ -773,10 +747,10 @@ class ImageDownloader:
                         link_type, link_data = link_result
                         
                         if link_type == 'anchor':
-                            # 页面内锚点链接 - 转换为粗体文本（因为锚点功能不起作用）
-                            strong_tag = soup.new_tag('strong')
-                            strong_tag.string = link_text
-                            a_tag = strong_tag
+                            # 页面内锚点链接 - 保留原样以支持页面内导航
+                            a_tag = soup.new_tag('a')
+                            a_tag.string = link_text
+                            a_tag['href'] = link_data  # link_data是锚点ID
                         elif link_type == 'article':
                             # 同站点文章链接，使用文章ID引用格式（避免破坏SPA样式）
                             a_tag = soup.new_tag('a')
@@ -790,11 +764,9 @@ class ImageDownloader:
                         link.replace_with(a_tag)
                         logger.debug(f"转换为链接: {href} -> {link_type}:{link_data}")
                     elif href.startswith('#') and len(href) > 1:
-                        # 页面内锚点链接 - 转换为粗体文本（因为锚点功能不起作用）
-                        logger.debug(f"将锚点链接转换为粗体文本: {href}")
-                        strong_tag = soup.new_tag('strong')
-                        strong_tag.string = link_text
-                        link.replace_with(strong_tag)
+                        # 页面内锚点链接 - 保留原样以支持页面内导航
+                        logger.debug(f"保留锚点链接: {href}")
+                        # 不做任何修改，保持原有的锚点链接
                     else:
                         # 检查是否是license文件链接 - 应该转换为GitHub项目链接
                         is_license_file = (
@@ -840,24 +812,23 @@ class ImageDownloader:
                                 attachment_filename = self.download_attachment(href)
                                 
                                 if attachment_filename:
-                                    # 计算到attachments目录的相对路径
-                                    def calculate_attachment_path():
-                                        if not article_category:
-                                            return "../attachments"
-                                        
-                                        # 计算分类的层级深度
-                                        category_depth = len([p for p in article_category.split('/') if p.strip()])
-                                        return "../" * category_depth + "attachments"
-                                    
-                                    attachment_path = calculate_attachment_path()
-                                    local_attachment_path = f"{attachment_path}/{attachment_filename}"
+                                    # 由于HTML使用了base标签指向output根目录，
+                                    # 附件路径应该直接基于output目录，不需要../前缀
+                                    local_attachment_path = f"attachments/{attachment_filename}"
                                     
                                     # 创建本地附件链接
                                     a_tag = soup.new_tag('a')
                                     a_tag.string = f"📎 {link_text}"  # 添加附件图标
                                     a_tag['href'] = local_attachment_path
                                     a_tag['class'] = 'attachment-link'
-                                    a_tag['download'] = attachment_filename  # 添加download属性
+                                    a_tag['target'] = '_blank'  # 在新标签页中打开
+                                    
+                                    # 对于可预览的文件（如PDF），不添加download属性，让浏览器直接预览
+                                    # 对于其他文件，添加download属性强制下载
+                                    previewable_formats = {'.pdf', '.txt', '.json', '.xml', '.csv'}
+                                    file_ext = Path(attachment_filename).suffix.lower()
+                                    if file_ext not in previewable_formats:
+                                        a_tag['download'] = attachment_filename
                                     
                                     # 替换原来的a标签
                                     link.replace_with(a_tag)
@@ -898,7 +869,49 @@ class ImageDownloader:
                                 
                                 logger.debug(f"保持外部链接: {href}")
         
+        # 为标题添加id属性以支持锚点导航
+        self._add_heading_ids(soup)
+        
         return str(soup), downloaded_files
+    
+    def _add_heading_ids(self, soup):
+        """为标题标签添加id属性以支持锚点导航"""
+        import re
+        
+        # 定义标题与步骤ID的映射
+        step_mapping = {
+            '前言': 'step1',
+            '视频学习': 'step8', 
+            '功能梳理': 'step2',
+            'Demo演示': 'step3',
+            '效果图': 'step3',  # 效果图可能是Demo演示的别名
+            '如何实现？': 'step4',
+            '如何实现': 'step4',
+            '代码分享': 'step5',
+            '代码共享': 'step5',
+            'Demo代码使用条款': 'step6',
+            '注意事项': 'step7',
+            '最后': 'step9'
+        }
+        
+        # 查找所有h1-h6标题
+        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            heading_text = heading.get_text().strip()
+            
+            # 清理标题文本，移除特殊字符
+            clean_text = re.sub(r'[？?！!。.]', '', heading_text)
+            
+            # 查找匹配的步骤ID
+            step_id = None
+            for key, value in step_mapping.items():
+                if key in clean_text:
+                    step_id = value
+                    break
+            
+            # 如果找到匹配的步骤ID，添加id属性
+            if step_id and not heading.get('id'):
+                heading['id'] = step_id
+                logger.debug(f"为标题 '{heading_text}' 添加id: {step_id}")
     
     def get_download_stats(self) -> Dict[str, int]:
         """获取下载统计信息"""
@@ -967,12 +980,17 @@ class HTMLGenerator:
         # 生成HTML内容
         html_template = self._get_html_template()
 
-        # 计算回到首页的相对路径
+        # 计算分类层级深度
         category_depth = len(category_parts)
-        index_link = "../" * category_depth + "index.html"
         
-        # 计算CSS文件的相对路径
-        css_path = "../" * category_depth + "css/article.css"
+        # 计算base路径 - 回到output目录的根目录
+        # 需要额外的一层"../"来回到html目录的上一级（output_tiny根目录）
+        base_path = "../" * (category_depth + 1)
+        
+        # 由于HTML使用了base标签指向output根目录，
+        # 所有路径都应该直接基于output目录，不需要../前缀
+        index_link = "index.html"
+        css_path = "css/article.css"
         
         # 准备元数据
         metadata = {
@@ -996,6 +1014,7 @@ class HTMLGenerator:
         final_html = final_html.replace('{content}', str(html_content))
         final_html = final_html.replace('{index_link}', index_link)
         final_html = final_html.replace('{css_path}', css_path)
+        final_html = final_html.replace('{base_path}', base_path)
         
         # 保存HTML文件
         with open(html_file, 'w', encoding='utf-8') as f:
@@ -1012,6 +1031,7 @@ class HTMLGenerator:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title} - kintone开发者文档</title>
+    <base href="{base_path}">
     <link rel="stylesheet" href="{css_path}">
     <!-- Prism syntax highlighting -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism.min.css">
@@ -1112,7 +1132,7 @@ class HTMLGenerator:
             if (!code.classList.contains(langClass)) code.classList.add(langClass);
             // add line numbers on pre if multiline
             const textForLines = code.textContent || '';
-            if (textForLines.indexOf('\\n') !== -1) pre.classList.add('line-numbers');
+            if (textForLines.indexOf('\\\\n') !== -1) pre.classList.add('line-numbers');
           });
           if (window.Prism && Prism.highlightAllUnder) {
             Prism.highlightAllUnder(container);
@@ -1322,6 +1342,79 @@ class HTMLGenerator:
     <script>
         let currentArticle = '';
         let articlesData = {};
+        const HASH_PREFIX = 'article-';
+
+        function makeArticleHash(articleId, sectionId) {
+            if (!articleId) {
+                return '';
+            }
+            const encodedId = encodeURIComponent(String(articleId));
+            let hash = '#' + HASH_PREFIX + encodedId;
+            if (sectionId) {
+                hash += ':' + encodeURIComponent(String(sectionId));
+            }
+            return hash;
+        }
+
+        function parseArticleHash(hash) {
+            if (!hash) {
+                return null;
+            }
+            const raw = hash.replace(/^#/, '');
+            if (!raw.startsWith(HASH_PREFIX)) {
+                return null;
+            }
+            const remainder = raw.slice(HASH_PREFIX.length);
+            const splitIndex = remainder.indexOf(':');
+            const idPart = splitIndex === -1 ? remainder : remainder.slice(0, splitIndex);
+            const sectionPart = splitIndex === -1 ? '' : remainder.slice(splitIndex + 1);
+            if (!idPart) {
+                return null;
+            }
+            return {
+                articleId: decodeURIComponent(idPart),
+                sectionId: sectionPart ? decodeURIComponent(sectionPart) : null
+            };
+        }
+
+        function escapeForSelector(value) {
+            if (window.CSS && window.CSS.escape) {
+                return window.CSS.escape(value);
+            }
+            return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\\\$&');
+        }
+
+        function focusSection(articleId, sectionId, smooth) {
+            if (!articleId || !sectionId) {
+                return;
+            }
+            const articleContent = document.getElementById('article-' + articleId);
+            if (!articleContent) {
+                return;
+            }
+            const safeSection = escapeForSelector(sectionId);
+            let target = articleContent.querySelector('#' + safeSection);
+            if (!target) {
+                target = articleContent.querySelector('[id="' + safeSection + '"]');
+            }
+            if (!target) {
+                target = articleContent.querySelector('[name="' + safeSection + '"]');
+            }
+            if (target && target.scrollIntoView) {
+                target.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+            }
+        }
+
+        function updateLocationHash(articleId, sectionId) {
+            const targetHash = makeArticleHash(articleId, sectionId);
+            if (!targetHash) {
+                return;
+            }
+            if (window.location.hash !== targetHash) {
+                window.location.hash = targetHash;
+            }
+        }
+
 
         // 代码高亮增强（Prism + brush映射 + 启发式）
         (function(){
@@ -1377,7 +1470,7 @@ class HTMLGenerator:
                 const langClass = 'language-' + lang;
                 if (!code.classList.contains(langClass)) code.classList.add(langClass);
                 const textForLines = code.textContent || '';
-                if (textForLines.indexOf('\\n') !== -1) pre.classList.add('line-numbers');
+                if (textForLines.indexOf('\\\\n') !== -1) pre.classList.add('line-numbers');
               });
               if (window.Prism && Prism.highlightAllUnder) {
                 Prism.highlightAllUnder(container);
@@ -1387,7 +1480,6 @@ class HTMLGenerator:
 
         // 现代化树形导航控制
         function toggleTreeNode(nodeId) {
-            console.log('toggleTreeNode called with:', nodeId);
             const node = document.getElementById(nodeId);
             if (!node) {
                 console.error('Node not found:', nodeId);
@@ -1400,7 +1492,6 @@ class HTMLGenerator:
             
             if (node.classList.contains('expanded')) {
                 // 收起
-                console.log('Collapsing node');
                 node.classList.remove('expanded');
                 if (children) {
                     // 移除内联样式，让CSS类控制
@@ -1410,7 +1501,6 @@ class HTMLGenerator:
                 if (expandIcon) expandIcon.style.transform = 'rotate(0deg)';
             } else {
                 // 展开
-                console.log('Expanding node');
                 node.classList.add('expanded');
                 if (children) {
                     // 移除内联样式，让CSS类控制
@@ -1423,30 +1513,79 @@ class HTMLGenerator:
         
 
         // 显示文章内容
-        function showArticle(articleId) {
+        function showArticle(articleId, options = {}) {
+            const { sectionId = null, updateHash = true, scrollIntoView = true } = options || {};
+
             // 隐藏欢迎页面
             document.getElementById('welcome-content').style.display = 'none';
-            
+
             // 隐藏所有文章内容
-            document.querySelectorAll('.article-content').forEach(content => {
+            document.querySelectorAll('.article-content').forEach(function(content) {
                 content.classList.remove('active');
             });
-            
+
             // 显示选中的文章
-            const articleContent = document.getElementById(`article-${articleId}`);
+            const articleContent = document.getElementById('article-' + articleId);
             if (articleContent) {
                 articleContent.classList.add('active');
                 currentArticle = articleId;
-                
+
                 // 为当前文章的代码块添加复制按钮
                 initCodeCopyButtons(articleContent);
-                try { enhanceCodeBlocks(articleContent); } catch(e) {}
+                try { enhanceCodeBlocks(articleContent); } catch (e) {}
+
+                setupInternalAnchors(articleContent, articleId);
+
+                if (!updateHash && sectionId && scrollIntoView) {
+                    focusSection(articleId, sectionId, scrollIntoView);
+                }
+
+                if (updateHash) {
+                    updateLocationHash(articleId, sectionId);
+                }
             } else {
                 // 如果文章不存在，显示友好提示
-                alert(`文章 ID ${articleId} 未包含在当前离线文档中。\n\n这可能是因为该文章在其他分类中，或者需要完整抓取才能获取。`);
+                const missingMessage = '文章 ID ' + articleId + ' 未包含在当前离线文档中。' + '\\n\\n' + '这可能是因为该文章在其他分类中，或者需要完整抓取才能获取。';
+                alert(missingMessage);
             }
         }
-        
+
+        function setupInternalAnchors(articleContent, articleId) {
+            if (!articleContent) {
+                return;
+            }
+            const anchors = articleContent.querySelectorAll('a[href^="#"]');
+            anchors.forEach(function(anchor) {
+                if (anchor.dataset && anchor.dataset.hashBound === '1') {
+                    return;
+                }
+                if (anchor.dataset) {
+                    anchor.dataset.hashBound = '1';
+                } else {
+                    anchor.setAttribute('data-hash-bound', '1');
+                }
+                anchor.addEventListener('click', function(event) {
+                    const href = anchor.getAttribute('href');
+                    if (!href || href === '#') {
+                        return;
+                    }
+                    const rawSection = href.slice(1);
+                    if (!rawSection) {
+                        return;
+                    }
+                    event.preventDefault();
+                    let decodedSection = rawSection;
+                    try { decodedSection = decodeURIComponent(rawSection); } catch (err) {}
+                    const targetHash = makeArticleHash(articleId, decodedSection);
+                    if (window.location.hash === targetHash) {
+                        focusSection(articleId, decodedSection, true);
+                    } else {
+                        window.location.hash = targetHash;
+                    }
+                });
+            });
+        }
+
         // 初始化代码复制按钮
         function initCodeCopyButtons(container) {
             const preBlocks = container.querySelectorAll('pre');
@@ -1541,6 +1680,23 @@ class HTMLGenerator:
             }
         }
 
+        function handleHashNavigation(scrollToTarget) {
+            if (scrollToTarget === undefined) {
+                scrollToTarget = true;
+            }
+            const info = parseArticleHash(window.location.hash);
+            if (info) {
+                showArticle(info.articleId, { updateHash: false, sectionId: info.sectionId, scrollIntoView: scrollToTarget });
+                if (!info.sectionId && scrollToTarget) {
+                    if (typeof window.scrollTo === 'function') {
+                        window.scrollTo({ top: 0, behavior: 'auto' });
+                    }
+                }
+            } else if (!window.location.hash) {
+                showWelcome();
+            }
+        }
+
         // 显示欢迎页面
         function showWelcome() {
             document.getElementById('welcome-content').style.display = 'flex';
@@ -1556,10 +1712,14 @@ class HTMLGenerator:
         // 初始化页面
         document.addEventListener('DOMContentLoaded', function() {
             // 确保所有节点默认是折叠状态（通过移除expanded类）
-            document.querySelectorAll('.tree-node').forEach(node => {
+            document.querySelectorAll('.tree-node').forEach(function(node) {
                 node.classList.remove('expanded');
             });
-            console.log('Tree navigation initialized');
+            handleHashNavigation(false);
+        });
+
+        window.addEventListener('hashchange', function() {
+            handleHashNavigation(true);
         });
     </script>
 </body>

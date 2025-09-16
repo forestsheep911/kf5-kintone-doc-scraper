@@ -115,9 +115,8 @@ DEFAULT_OUTPUT_DIR = Path("data")
 OUTPUT_FORMATS = ['markdown', 'json', 'html']
 
 # B站视频处理配置
-BILIBILI_VIDEO_MODE = "iframe"  # 默认使用嵌入播放器模式
-# iframe: 直接嵌入视频播放器到页面中，提供更好的用户体验
-# link: 生成链接跳转到B站视频页面
+BILIBILI_VIDEO_MODE = "link"  # 默认使用链接模式
+# link: 生成链接跳转到B站视频页面（离线友好，推荐）
 
 # 文件名安全字符替换
 FILENAME_SAFE_CHARS = {

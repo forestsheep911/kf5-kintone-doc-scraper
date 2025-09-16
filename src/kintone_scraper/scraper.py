@@ -614,10 +614,15 @@ class KintoneScraper:
             return self.result
 
         try:
+            # 1. 首先构建分类映射
+            logger.info("🗂️  构建分类映射...")
+            forum_mapping = self.kf5.build_category_mapping()
+            logger.info(f"📋 获取到 {len(forum_mapping)} 个分类映射")
+            
             # 先分页拉取全部 posts 列表，优先使用 API 提供的文章 URL
             page = 1
             per_page = 100
-            posts: List[dict] = []  # 保留 {id, url, title}
+            posts: List[dict] = []  # 保留 {id, url, title, forum_id, forum_name}
             while True:
                 data = self.kf5.list_all_posts(page=page, per_page=per_page)
                 items = data.get('posts') or data.get('data') or data.get('items') or []
@@ -627,6 +632,9 @@ class KintoneScraper:
                     aid = str(it.get('id') or it.get('post_id') or it.get('article_id') or '').strip()
                     url = (it.get('url') or '').strip()
                     title = (it.get('title') or '').strip()
+                    forum_id = it.get('forum_id')
+                    forum_name = it.get('forum_name', '')
+                    
                     # 容错策略：优先使用ID构造 KB URL；若URL已给出但非KB且有ID，也回退为KB URL
                     if not url and aid:
                         url = f"/hc/kb/article/{aid}/"
@@ -634,7 +642,13 @@ class KintoneScraper:
                         url = f"/hc/kb/article/{aid}/"
                     # 仅当至少有 id 或 url 时加入
                     if aid or url:
-                        posts.append({'id': aid, 'url': url, 'title': title})
+                        posts.append({
+                            'id': aid, 
+                            'url': url, 
+                            'title': title,
+                            'forum_id': forum_id,
+                            'forum_name': forum_name
+                        })
                 if len(items) < per_page:
                     break
                 page += 1
@@ -642,13 +656,30 @@ class KintoneScraper:
             self.result.total_articles = len(posts)
             logger.info(f"API 返回可能的KB文章: {len(posts)}")
 
-            # 逐篇抓取 HTML 页面
+            # 逐篇抓取 HTML 页面，使用正确的分类信息
             from .models import Section
-            dummy_section = Section(url="", title="", description="", articles=[], category_path="")
 
             article_progress = make_progress(self.result.total_articles or 1, "抓取文章:")
             for p in posts:
                 article_url = urljoin(self.base_url, p.get('url') or f"/hc/kb/article/{p.get('id')}/")
+                
+                # 为每篇文章创建带有正确分类的section
+                forum_id = p.get('forum_id')
+                category_path = "其他/未知"  # 默认值
+                
+                if forum_id and forum_id in forum_mapping:
+                    category_path = forum_mapping[forum_id]['full_path']
+                elif p.get('forum_name'):
+                    category_path = f"其他/{p.get('forum_name')}"
+                
+                article_section = Section(
+                    url="", 
+                    title=p.get('forum_name', '未知分类'), 
+                    description="", 
+                    articles=[], 
+                    category_path=category_path
+                )
+                
                 # 增量：若文件已存在则跳过
                 if self.skip_existing:
                     pid = str(p.get('id') or '').strip()
@@ -660,10 +691,11 @@ class KintoneScraper:
                             article_progress.update()
                             rate_limit(REQUEST_DELAY)
                             continue
-                article = self._extract_article_content(article_url, dummy_section)
+                
+                article = self._extract_article_content(article_url, article_section)
                 if article:
                     self.result.add_article(article, success=True)
-                    self._save_article_files(article, dummy_section)
+                    self._save_article_files(article, article_section)
                 else:
                     self.result.failed_articles += 1
                 article_progress.update()

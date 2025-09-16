@@ -151,22 +151,13 @@ SCRIPT_BLOCK_TEMPLATE = '''
   }
 
   function process() {
-    console.log('开始处理拷贝按钮...');
     var pres = Array.prototype.slice.call(document.getElementsByTagName('pre'));
-    console.log('找到的pre标签数量:', pres.length);
     pres.forEach(function(pre, index) {
       var content = pre.textContent || pre.innerText || '';
-      console.log('检查pre标签', index, '内容:', content.substring(0, 50));
-      console.log('  是否包含大括号:', /[{}\\[\\]]/.test(content));
-      console.log('  是否包含关键词:', /\\b(function|var|const|let|if|for|while)\\b/.test(content));
       if (isCodePre(pre)) {
-        console.log('识别为代码块，正在添加拷贝按钮');
         addCopy(pre);
-      } else {
-        console.log('不是代码块，跳过');
       }
     });
-    console.log('处理完成');
   }
 
   if (document.readyState === 'loading') {

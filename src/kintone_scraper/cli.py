@@ -45,21 +45,13 @@ from .scraper import KintoneScraper
     is_flag=True,
     help='试运行，只显示将要抓取的内容，不实际下载'
 )
-@click.option(
-    '--bilibili-mode',
-    type=click.Choice(['link', 'iframe']),
-    default='iframe',
-    help='B站视频处理模式：iframe=嵌入播放器（推荐），link=生成跳转链接',
-    show_default=True
-)
 def main(
     output: Path,
     categories: Optional[str],
     base_url: str,
     verbose: bool,
     list_categories: bool,
-    dry_run: bool,
-    bilibili_mode: str
+    dry_run: bool
 ) -> None:
     """
     kintone开发者文档抓取器
@@ -118,7 +110,7 @@ def main(
     # 试运行
     if dry_run:
         click.echo("🔍 试运行模式 - 分析网站结构...")
-        scraper = KintoneScraper(output_dir=output, base_url=base_url, bilibili_mode=bilibili_mode)
+        scraper = KintoneScraper(output_dir=output, base_url=base_url)
         
         # 获取section信息但不下载内容
         section_links = scraper._extract_section_links()
@@ -139,14 +131,14 @@ def main(
         return
     
     # 创建抓取器
-    scraper = KintoneScraper(output_dir=output, base_url=base_url, bilibili_mode=bilibili_mode)
+    scraper = KintoneScraper(output_dir=output, base_url=base_url)
     
     # 显示开始信息
     click.echo("🚀 kintone开发者文档抓取器")
     click.echo("=" * 50)
     click.echo(f"📂 输出目录: {output.absolute()}")
     click.echo(f"🌐 目标网站: {base_url}")
-    click.echo(f"📺 B站视频模式: {'直接嵌入播放器' if bilibili_mode == 'iframe' else '生成跳转链接'}")
+    click.echo(f"📺 B站视频处理: 生成跳转链接")
     
     if target_categories:
         click.echo(f"🎯 目标分类: {', '.join(target_categories)}")

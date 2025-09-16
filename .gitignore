@@ -155,6 +155,7 @@ downloads/
 output_full/
 output_small/
 output_test/
+output_tiny/
 
 # Temporary files
 tmp_*

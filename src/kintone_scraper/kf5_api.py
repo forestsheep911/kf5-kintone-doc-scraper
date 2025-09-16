@@ -135,8 +135,23 @@ class KF5HelpCenterClient:
 
     # High-level endpoints (paths to be verified against docs)
     def list_categories(self) -> Dict[str, Any]:
-        # Example: /api/v1/helpcenter/categories
-        return self.get("categories")
+        # KF5 API: GET /apiv2/categories.json - 获取文档分区列表
+        return self.get("categories.json")
+
+    def list_forums(self, category_id: Optional[int] = None) -> Dict[str, Any]:
+        # KF5 API: GET /apiv2/forums.json - 获取文档分类列表
+        params = {}
+        if category_id:
+            params['category_id'] = category_id
+        return self.get("forums.json", params=params)
+    
+    def list_forums_by_category(self, category_id: int) -> Dict[str, Any]:
+        # KF5 API: GET /apiv2/categories/{id}/forums.json - 获取指定分区下的分类列表
+        return self.get(f"categories/{category_id}/forums.json")
+
+    def get_forum(self, forum_id: int) -> Dict[str, Any]:
+        # KF5 API: GET /apiv2/forums/{id}.json - 查看文档分类详情
+        return self.get(f"forums/{forum_id}.json")
 
     def list_sections(self, category_id: int) -> Dict[str, Any]:
         # Example: /api/v1/helpcenter/categories/{id}/sections
@@ -158,6 +173,62 @@ class KF5HelpCenterClient:
     def list_all_posts(self, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
         # apiv2/posts.json （不要使用 ../ 前缀，交由前缀拼装）
         return self.get("posts.json", params={"page": page, "per_page": per_page})
+
+    def get_post(self, post_id: int) -> Dict[str, Any]:
+        # KF5 API: GET /apiv2/posts/{id}.json - 查看文档详情
+        return self.get(f"posts/{post_id}.json")
+    
+    def list_posts_by_forum(self, forum_id: int, page: int = 1, per_page: int = 50) -> Dict[str, Any]:
+        # KF5 API: GET /apiv2/posts.json?forum_id={forum_id} - 获取指定分类的文章列表
+        return self.get("posts.json", params={"forum_id": forum_id, "page": page, "per_page": per_page})
+
+    def build_category_mapping(self) -> Dict[int, Dict[str, Any]]:
+        """构建forum_id到完整分类路径的映射，按照KF5 API层级结构"""
+        try:
+            # 1. 获取所有分区 (categories)
+            print("🔍 获取所有分区...")
+            categories_resp = self.list_categories()
+            categories = categories_resp.get('categories', [])
+            print(f"📂 找到 {len(categories)} 个分区")
+            
+            # 构建forum_id到完整路径的映射
+            forum_mapping = {}
+            
+            # 2. 遍历每个分区，获取其下的分类 (forums)
+            for category in categories:
+                category_id = category['id']
+                category_name = category['title']
+                print(f"📂 处理分区: {category_name} (ID: {category_id})")
+                
+                try:
+                    # 使用标准API获取该分区下的分类
+                    forums_resp = self.list_forums_by_category(category_id)
+                    forums = forums_resp.get('forums', [])
+                    print(f"  📁 找到 {len(forums)} 个分类")
+                    
+                    for forum in forums:
+                        forum_id = forum['id']
+                        forum_name = forum['title']
+                        full_path = f"{category_name}/{forum_name}"
+                        
+                        forum_mapping[forum_id] = {
+                            'forum_name': forum_name,
+                            'category_name': category_name,
+                            'category_id': category_id,
+                            'full_path': full_path
+                        }
+                        print(f"    📄 {forum_name} -> {full_path}")
+                        
+                except Exception as e:
+                    print(f"  ⚠️  获取分区 {category_name} 下的分类失败: {e}")
+                    continue
+            
+            print(f"✅ 构建完成，共 {len(forum_mapping)} 个分类映射")
+            return forum_mapping
+            
+        except Exception as e:
+            print(f"⚠️  构建分类映射失败: {e}")
+            return {}
 
 
 __all__ = ["KF5Config", "KF5HelpCenterClient"]
