@@ -182,7 +182,7 @@ def main(
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """kintone开发者文档抓取器工具集"""
     pass
 
@@ -194,7 +194,7 @@ def cli():
     default=DEFAULT_OUTPUT_DIR,
     help='分析结果输出目录'
 )
-def analyze(output: Path):
+def analyze(output: Path) -> None:
     """分析网站结构，不下载内容"""
     click.echo("🔍 分析kintone网站结构...")
     
@@ -234,7 +234,7 @@ def analyze(output: Path):
     default=DEFAULT_OUTPUT_DIR,
     help='数据目录路径'
 )
-def search(search_term: str, data_dir: Path):
+def search(search_term: str, data_dir: Path) -> None:
     """在已抓取的文档中搜索"""
     click.echo(f"🔍 搜索: {search_term}")
     

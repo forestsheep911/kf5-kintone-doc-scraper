@@ -400,54 +400,115 @@ body {
     text-shadow: 0 0 8px rgba(251, 191, 36, 0.3) !important;
 }
 
-/* 目录链接样式 - 锚点链接 */
-.anchor-link a, ul.anchor-link a {
-    color: #3498db;
-    text-decoration: none;
-    font-weight: 500;
-    background: linear-gradient(135deg, #3498db, #2980b9);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    padding: 2px 6px;
-    border-radius: 4px;
-    position: relative;
-    transition: all 0.3s ease;
-    display: inline-block;
+/* 目录卡片与锚点样式 */
+.toc-card {
+    background: linear-gradient(135deg, #eff3ff 0%, #fbfdff 100%);
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-left: 5px solid #4f46e5;
+    border-radius: 14px;
+    padding: 22px 26px;
+    margin: 0 0 36px 0;
+    box-shadow: 0 20px 30px rgba(79, 70, 229, 0.08);
 }
 
-.anchor-link a:hover, ul.anchor-link a:hover {
-    background: linear-gradient(135deg, #5dade2, #3498db);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    transform: translateY(-1px);
-    text-shadow: 0 2px 4px rgba(52, 152, 219, 0.3);
+.toc-card .toc-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #312e81;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.9;
 }
 
-.anchor-link a:before, ul.anchor-link a:before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(135deg, rgba(52, 152, 219, 0.1), rgba(41, 128, 185, 0.1));
-    border-radius: 4px;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    z-index: -1;
+.toc-card .toc-title:before {
+    content: '🧭';
+    font-size: 1.05rem;
 }
 
-.anchor-link a:hover:before, ul.anchor-link a:hover:before {
-    opacity: 1;
+.toc-card .toc-body {
+    margin-top: 16px;
 }
 
-/* 目录列表样式美化 */
-.anchor-link, ul.anchor-link {
-    list-style: none;
-    padding-left: 0;
-    margin: 20px 0;
+.anchor-link, ul.anchor-link,
+.toc-card ul.anchor-link,
+ul.anchor-link.toc-list-root {
+    list-style: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.anchor-link li, ul.anchor-link li,
+.toc-card ul.anchor-link li,
+ul.anchor-link.toc-list-root li {
+    position: relative !important;
+    margin: 6px 0 !important;
+    padding-left: 20px !important;
+}
+
+.anchor-link li:before, ul.anchor-link li:before,
+.toc-card ul.anchor-link li:before,
+ul.anchor-link.toc-list-root li:before {
+    content: '' !important;
+    width: 6px !important;
+    height: 6px !important;
+    border-radius: 999px !important;
+    background: linear-gradient(135deg, #4f46e5, #2563eb) !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 11px !important;
+    opacity: 0.9 !important;
+    box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.08) !important;
+    display: inline-block !important;
+}
+
+.anchor-link li > a,
+ul.anchor-link li > a,
+.toc-card ul.anchor-link li > a,
+ul.anchor-link.toc-list-root li > a {
+    color: #1d4ed8 !important;
+    text-decoration: none !important;
+    font-weight: 500 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    transition: color 0.2s ease, transform 0.2s ease !important;
+}
+
+.anchor-link li > a:visited,
+ul.anchor-link li > a:visited,
+.toc-card ul.anchor-link li > a:visited,
+ul.anchor-link.toc-list-root li > a:visited {
+    color: #4338ca !important;
+}
+
+.anchor-link li > a:hover,
+ul.anchor-link li > a:hover,
+.toc-card ul.anchor-link li > a:hover,
+ul.anchor-link.toc-list-root li > a:hover {
+    color: #1e3a8a !important;
+    transform: translateX(4px) !important;
+}
+
+.anchor-link .toc-sub,
+ul.anchor-link .toc-sub {
+    margin-top: 6px;
+    margin-left: 18px;
+    padding-left: 14px;
+    border-left: 1px dashed rgba(99, 102, 241, 0.25);
+}
+
+.anchor-link .toc-sub li,
+ul.anchor-link .toc-sub li {
+    margin: 4px 0;
+}
+
+.anchor-link .toc-sub li:before,
+ul.anchor-link .toc-sub li:before {
+    background: linear-gradient(135deg, #60a5fa, #38bdf8);
+    box-shadow: none;
 }
 
 /* 兼容原始网站的padding类 - 提高特异性以覆盖ul.anchor-link */
@@ -455,23 +516,95 @@ ul.list-paddingleft-2, .list-paddingleft-2 {
     padding-left: 30px !important;
 }
 
-.anchor-link li, ul.anchor-link li {
-    margin: 8px 0;
-    padding: 0;
+.toc-card .toc-body ul.list-paddingleft-2,
+.toc-card ul.anchor-link.list-paddingleft-2,
+ul.anchor-link.toc-list-root.list-paddingleft-2 {
+    padding-left: 0 !important;
+}
+
+/* 强制TOC目录样式 - 使用最高优先级 */
+.toc-card .toc-body ul.toc-list-root.anchor-link li a,
+.toc-card .toc-body ul.anchor-link li a,
+ul.toc-list-root.anchor-link li a {
+    color: #3498db !important;
+    text-decoration: none !important;
+    font-weight: 500 !important;
+    background: linear-gradient(135deg, #3498db, #2980b9) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
+    position: relative !important;
+    transition: all 0.3s ease !important;
+    display: inline-block !important;
+}
+
+.toc-card .toc-body ul.toc-list-root.anchor-link li a:hover,
+.toc-card .toc-body ul.anchor-link li a:hover,
+ul.toc-list-root.anchor-link li a:hover {
+    background: linear-gradient(135deg, #5dade2, #3498db) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+    transform: translateY(-1px) !important;
+    text-shadow: 0 2px 4px rgba(52, 152, 219, 0.3) !important;
+}
+
+.toc-card .toc-body ul.toc-list-root.anchor-link li a:before,
+.toc-card .toc-body ul.anchor-link li a:before,
+ul.toc-list-root.anchor-link li a:before {
+    content: '📖' !important;
+    margin-right: 8px !important;
+    font-size: 14px !important;
+    -webkit-text-fill-color: initial !important;
+    background: none !important;
+}
+
+/* 文章正文中的内部锚点链接样式 */
+.content a[href^="#section-"], 
+.article-body a[href^="#section-"],
+.content a[href^="#step"], 
+.article-body a[href^="#step"] {
+    color: #16a085;
+    text-decoration: none;
+    font-weight: 500;
+    background: linear-gradient(135deg, #16a085, #1abc9c);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    padding: 1px 4px;
+    border-radius: 3px;
     position: relative;
+    transition: all 0.3s ease;
+    display: inline-block;
+    border-bottom: 1px solid rgba(22, 160, 133, 0.2);
 }
 
-.anchor-link li:before, ul.anchor-link li:before {
-    content: "📖";
-    margin-right: 8px;
-    font-size: 14px;
+.content a[href^="#section-"]:hover, 
+.article-body a[href^="#section-"]:hover,
+.content a[href^="#step"]:hover, 
+.article-body a[href^="#step"]:hover {
+    background: linear-gradient(135deg, #1abc9c, #48c9b0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    transform: translateY(-1px);
+    border-bottom: 1px solid rgba(22, 160, 133, 0.4);
+    box-shadow: 0 2px 4px rgba(22, 160, 133, 0.2);
 }
 
-.anchor-link li p, ul.anchor-link li p {
-    margin: 0;
-    display: inline;
+.content a[href^="#section-"]:before, 
+.article-body a[href^="#section-"]:before,
+.content a[href^="#step"]:before, 
+.article-body a[href^="#step"]:before {
+    content: '🔗';
+    margin-right: 4px;
+    font-size: 12px;
+    -webkit-text-fill-color: initial;
+    background: none;
+    opacity: 0.7;
 }
-
 .content code {
     background: #f4f4f4;
     padding: 2px 6px;

@@ -1,22 +1,21 @@
 """核心抓取器"""
 
 import logging
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .config import (
-    BASE_URL, DEFAULT_HEADERS, DEFAULT_OUTPUT_DIR, MAIN_CATEGORIES,
-    REQUEST_DELAY, REQUEST_TIMEOUT, SELECTORS, get_category_path, BILIBILI_VIDEO_MODE
+    BASE_URL, DEFAULT_HEADERS, DEFAULT_OUTPUT_DIR,
+    REQUEST_DELAY, REQUEST_TIMEOUT, SELECTORS, get_category_path, BILIBILI_VIDEO_MODE, ARTICLE_WORKERS
 )
 from .models import Article, Category, ScrapingResult, Section
-from .utils import (
-    ProgressTracker, rate_limit, sanitize_filename, make_progress
-)
+from .utils import rate_limit, make_progress
 from .image_downloader import ImageDownloader, HTMLGenerator
 try:
     from .kf5_api import KF5HelpCenterClient  # optional API client
@@ -30,20 +29,24 @@ logger = logging.getLogger(__name__)
 class KintoneScraper:
     """kintone文档抓取器"""
     
-    def __init__(self, output_dir: Path = DEFAULT_OUTPUT_DIR, base_url: str = BASE_URL, enable_images: bool = True, try_external_images: bool = False, bilibili_mode: str = None, skip_existing: bool = True):
+    def __init__(self, output_dir: Path = DEFAULT_OUTPUT_DIR, base_url: str = BASE_URL, enable_images: bool = True, try_external_images: bool = False, bilibili_mode: Optional[str] = None, skip_existing: bool = True, article_workers: Optional[int] = None):
         self.base_url = base_url
         self.output_dir = Path(output_dir)
         self.enable_images = enable_images
         self.try_external_images = try_external_images
         self.bilibili_mode = bilibili_mode or BILIBILI_VIDEO_MODE
         self.skip_existing = skip_existing  # 是否跳过已存在的文章HTML
+        self.article_workers = max(1, article_workers or ARTICLE_WORKERS)
         
         # 创建session
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
+        self._thread_local = threading.local()
+        self._thread_local.session = self.session
         
         # 跟踪已访问的URL
         self.visited_urls: Set[str] = set()
+        self._visited_lock = threading.Lock()
         
         # 抓取结果
         self.result = ScrapingResult()
@@ -116,19 +119,31 @@ class KintoneScraper:
         except Exception:
             return None
     
+    def _get_thread_session(self) -> requests.Session:
+        """为当前线程提供带默认头的session"""
+        session = getattr(self._thread_local, 'session', None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(DEFAULT_HEADERS)
+            self._thread_local.session = session
+        return session
+
     def _get_page_content(self, url: str) -> Optional[BeautifulSoup]:
         """获取页面内容"""
-        if url in self.visited_urls:
-            logger.debug(f"跳过已访问的URL: {url}")
-            return None
+        with self._visited_lock:
+            if url in self.visited_urls:
+                logger.debug(f"跳过已访问的URL: {url}")
+                return None
         
         try:
             logger.info(f"访问: {url}")
-            response = self.session.get(url, timeout=REQUEST_TIMEOUT)
+            session = self._get_thread_session()
+            response = session.get(url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             response.encoding = 'utf-8'
             
-            self.visited_urls.add(url)
+            with self._visited_lock:
+                self.visited_urls.add(url)
             return BeautifulSoup(response.text, 'html.parser')
             
         except requests.RequestException as e:
@@ -385,7 +400,11 @@ class KintoneScraper:
             # 提取更新时间
             time_elem = soup.select_one(SELECTORS['last_updated'])
             if time_elem:
-                article.last_updated = time_elem.get('datetime') or time_elem.get_text(strip=True)
+                datetime_attr = time_elem.get('datetime')
+                if datetime_attr and isinstance(datetime_attr, str):
+                    article.last_updated = datetime_attr
+                else:
+                    article.last_updated = time_elem.get_text(strip=True)
             
             if article.title:
                 logger.debug(f"成功提取文章: {article.title}")
@@ -464,7 +483,7 @@ class KintoneScraper:
         # 查找包含这些文本的元素并移除其父容器
         for text in texts_to_remove:
             # 查找包含特定文本的元素
-            for elem in soup.find_all(text=lambda t: t and text in t):
+            for elem in soup.find_all(text=lambda t: t is not None and isinstance(t, str) and text in t):
                 parent = elem.parent
                 if parent and parent.name:
                     # 检查父元素是否应该被移除
@@ -479,8 +498,8 @@ class KintoneScraper:
         if not article.title:
             return
         
-        # 获取分类路径
-        category_parts = section.category_path.split('/')
+        # 获取分类路径 (未使用，保留用于调试)
+        # category_parts = section.category_path.split('/')
         
         # 生成HTML文件（如果启用图片功能）
         if self.enable_images and self.html_generator and article.html_content:
@@ -518,96 +537,135 @@ class KintoneScraper:
         
         return list(categories_dict.values())
     
-    def scrape_all(self) -> ScrapingResult:
+    def _scrape_single_article(self, section: Section, article_url: str) -> Optional[Article]:
+        """在工作线程中抓取单篇文章"""
+        try:
+            return self._extract_article_content(article_url, section)
+        except Exception as e:
+            logger.error(f"抓取文章异常 {article_url}: {e}")
+            return None
+
+    def _process_article_tasks(self, tasks: List[Tuple[Section, str]], article_progress: Any) -> None:
+        """使用线程池抓取任务列表并更新结果"""
+        if not tasks:
+            return
+        delay = REQUEST_DELAY / max(1, self.article_workers)
+        logger.info(f"使用 {self.article_workers} 个线程抓取 {len(tasks)} 篇文章")
+        with ThreadPoolExecutor(max_workers=self.article_workers) as executor:
+            future_to_task = {
+                executor.submit(self._scrape_single_article, section, article_url): (section, article_url)
+                for section, article_url in tasks
+            }
+            for future in as_completed(future_to_task):
+                section, article_url = future_to_task[future]
+                article = None
+                try:
+                    article = future.result()
+                except Exception as exc:
+                    logger.error(f"文章抓取失败 {article_url}: {exc}")
+                if article:
+                    self.result.add_article(article, success=True)
+                    self._save_article_files(article, section)
+                else:
+                    self.result.failed_articles += 1
+                    detail = f"{section.title or '未知分类'} -> {article_url}"
+                    self.result.failed_details.append(detail)
+                    logger.warning(f"文章抓取失败: {detail}")
+                article_progress.update()
+                if delay > 0:
+                    rate_limit(delay)
+
+
+    def scrape_all(self, section_article_limit: Optional[int] = None) -> ScrapingResult:
         """抓取所有文档"""
         logger.info("="*60)
         logger.info("开始抓取kintone开发者文档")
         logger.info("="*60)
-        
+
+        # 重置结果与访问记录，确保多次运行一致
+        self.result = ScrapingResult()
+        self.visited_urls.clear()
+
         try:
             # 1. 提取所有section链接
             section_links = self._extract_section_links()
             if not section_links:
                 logger.error("未找到任何section链接")
                 return self.result
-            
-            self.result.total_sections = len(section_links)
-            
-            # 2. 处理每个section
+
             sections: List[Section] = []
             section_progress = make_progress(len(section_links), "处理Sections:")
-            
+            total_articles = 0
+
             for section_url in section_links:
                 section = self._extract_section_info(section_url)
                 if section:
+                    if section_article_limit is not None:
+                        section.articles = section.articles[:section_article_limit]
+                    section.article_count = len(section.articles)
+                    total_articles += section.article_count
                     sections.append(section)
-                    self.result.total_articles += section.article_count
-                
+
                 section_progress.update()
                 rate_limit(REQUEST_DELAY)
-            
+
             section_progress.finish()
-            
+
+            self.result.total_sections = len(sections)
+            self.result.total_articles = total_articles
+
             # 3. 按分类组织
             self.result.categories = self._organize_by_categories(sections)
-            
+
             # 4. 准备抓取
-            
-            # 5. 抓取所有文章
             logger.info(f"开始抓取 {self.result.total_articles} 篇文章...")
-            article_progress = make_progress(self.result.total_articles, "抓取文章:")
-            
+            article_progress = make_progress(self.result.total_articles or 1, "抓取文章:")
+
+            tasks: List[Tuple[Section, str]] = []
             for section in sections:
                 for article_url in section.articles:
-                    # 增量：若文件已存在则跳过
                     if self.skip_existing:
                         aid = self._extract_article_id(article_url) or ""
                         if aid:
                             existed = self._existing_html_for_id(aid)
                             if existed:
                                 logger.info(f"跳过已存在文章: {aid} -> {existed}")
-                                self.result.successful_articles += 1  # 计入成功以便统计
+                                self.result.successful_articles += 1
                                 article_progress.update()
-                                rate_limit(REQUEST_DELAY)
                                 continue
-                    article = self._extract_article_content(article_url, section)
-                    
-                    if article:
-                        self.result.add_article(article, success=True)
-                        self._save_article_files(article, section)
-                    else:
-                        self.result.failed_articles += 1
-                    
-                    article_progress.update()
-                    rate_limit(REQUEST_DELAY)
-            
+                    tasks.append((section, article_url))
+
+            self._process_article_tasks(tasks, article_progress)
             article_progress.finish()
-            
+
             # 6. 保存结果
             self._save_results()
-            
+
             # 7. 标记完成
             self.result.mark_completed()
-            
+
             logger.info("="*60)
             logger.info("抓取完成!")
             logger.info(f"成功抓取: {self.result.successful_articles}/{self.result.total_articles} 篇文章")
             logger.info(f"成功率: {self.result.get_success_rate():.1%}")
             logger.info(f"耗时: {self.result.duration}")
             logger.info("="*60)
-            
+
             return self.result
-        
+
         except KeyboardInterrupt:
             logger.warning("用户中断抓取")
             self._save_results()
             return self.result
 
-    def scrape_all_via_api(self) -> ScrapingResult:
+    def scrape_all_via_api(self, per_category_limit: Optional[int] = None) -> ScrapingResult:
         """通过 KF5 API 列表驱动抓取（更不易漏）。"""
         logger.info("="*60)
         logger.info("开始通过 API 列表驱动抓取")
         logger.info("="*60)
+
+        self.result = ScrapingResult()
+        self.visited_urls.clear()
 
         if not self.kf5:
             logger.error("KF5 API 未配置或初始化失败，无法使用 API 列表驱动")
@@ -618,11 +676,11 @@ class KintoneScraper:
             logger.info("🗂️  构建分类映射...")
             forum_mapping = self.kf5.build_category_mapping()
             logger.info(f"📋 获取到 {len(forum_mapping)} 个分类映射")
-            
+
             # 先分页拉取全部 posts 列表，优先使用 API 提供的文章 URL
             page = 1
             per_page = 100
-            posts: List[dict] = []  # 保留 {id, url, title, forum_id, forum_name}
+            raw_posts: List[dict] = []  # 保留 {id, url, title, forum_id, forum_name}
             while True:
                 data = self.kf5.list_all_posts(page=page, per_page=per_page)
                 items = data.get('posts') or data.get('data') or data.get('items') or []
@@ -634,7 +692,7 @@ class KintoneScraper:
                     title = (it.get('title') or '').strip()
                     forum_id = it.get('forum_id')
                     forum_name = it.get('forum_name', '')
-                    
+
                     # 容错策略：优先使用ID构造 KB URL；若URL已给出但非KB且有ID，也回退为KB URL
                     if not url and aid:
                         url = f"/hc/kb/article/{aid}/"
@@ -642,9 +700,9 @@ class KintoneScraper:
                         url = f"/hc/kb/article/{aid}/"
                     # 仅当至少有 id 或 url 时加入
                     if aid or url:
-                        posts.append({
-                            'id': aid, 
-                            'url': url, 
+                        raw_posts.append({
+                            'id': aid,
+                            'url': url,
                             'title': title,
                             'forum_id': forum_id,
                             'forum_name': forum_name
@@ -653,53 +711,71 @@ class KintoneScraper:
                     break
                 page += 1
 
-            self.result.total_articles = len(posts)
-            logger.info(f"API 返回可能的KB文章: {len(posts)}")
+            logger.info(f"API 返回可能的KB文章: {len(raw_posts)}")
 
-            # 逐篇抓取 HTML 页面，使用正确的分类信息
             from .models import Section
 
-            article_progress = make_progress(self.result.total_articles or 1, "抓取文章:")
-            for p in posts:
-                article_url = urljoin(self.base_url, p.get('url') or f"/hc/kb/article/{p.get('id')}/")
-                
-                # 为每篇文章创建带有正确分类的section
-                forum_id = p.get('forum_id')
-                category_path = "其他/未知"  # 默认值
-                
+            category_counts: Dict[str, int] = {}
+            filtered_posts: List[Tuple[dict, str]] = []
+            for post in raw_posts:
+                forum_id = post.get('forum_id')
+                forum_name = post.get('forum_name', '')
+
                 if forum_id and forum_id in forum_mapping:
                     category_path = forum_mapping[forum_id]['full_path']
-                elif p.get('forum_name'):
-                    category_path = f"其他/{p.get('forum_name')}"
-                
+                    post['forum_name'] = forum_mapping[forum_id]['forum_name']
+                elif forum_name:
+                    category_path = f"其他/{forum_name}"
+                else:
+                    category_path = "其他/未知"
+
+                if per_category_limit is not None:
+                    count = category_counts.get(category_path, 0)
+                    if count >= per_category_limit:
+                        continue
+                    category_counts[category_path] = count + 1
+                else:
+                    category_counts[category_path] = category_counts.get(category_path, 0) + 1
+
+                filtered_posts.append((post, category_path))
+
+            self.result.total_articles = len(filtered_posts)
+            self.result.total_sections = len({category_path for _, category_path in filtered_posts})
+            logger.info(f"筛选后待抓取文章: {self.result.total_articles}")
+
+            article_progress = make_progress(self.result.total_articles or 1, "抓取文章:")
+            tasks: List[Tuple[Section, str]] = []
+            sections_for_categories: List[Section] = []
+
+            for post, category_path in filtered_posts:
+                article_url = urljoin(self.base_url, post.get('url') or f"/hc/kb/article/{post.get('id')}/")
+                forum_name = post.get('forum_name', '未知分类')
+
                 article_section = Section(
-                    url="", 
-                    title=p.get('forum_name', '未知分类'), 
-                    description="", 
-                    articles=[], 
+                    url="",
+                    title=forum_name,
+                    description="",
+                    articles=[article_url],
                     category_path=category_path
                 )
-                
-                # 增量：若文件已存在则跳过
+                article_section.article_count = len(article_section.articles)
+                sections_for_categories.append(article_section)
+
                 if self.skip_existing:
-                    pid = str(p.get('id') or '').strip()
+                    pid = str(post.get('id') or '').strip()
                     if pid:
                         existed = self._existing_html_for_id(pid)
                         if existed:
                             logger.info(f"跳过已存在文章: {pid} -> {existed}")
                             self.result.successful_articles += 1
                             article_progress.update()
-                            rate_limit(REQUEST_DELAY)
                             continue
-                
-                article = self._extract_article_content(article_url, article_section)
-                if article:
-                    self.result.add_article(article, success=True)
-                    self._save_article_files(article, article_section)
-                else:
-                    self.result.failed_articles += 1
-                article_progress.update()
-                rate_limit(REQUEST_DELAY)
+
+                tasks.append((article_section, article_url))
+
+            self.result.categories = self._organize_by_categories(sections_for_categories)
+
+            self._process_article_tasks(tasks, article_progress)
             article_progress.finish()
 
             # 保存结果并标记
@@ -717,7 +793,8 @@ class KintoneScraper:
             logger.error(f"抓取过程中出现错误: {e}")
             self._save_results()
             return self.result
-    
+
+
     def scrape_categories(self, category_names: List[str]) -> ScrapingResult:
         """只抓取指定分类的文档"""
         logger.info(f"开始抓取指定分类: {category_names}")

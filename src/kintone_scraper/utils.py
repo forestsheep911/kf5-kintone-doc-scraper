@@ -272,7 +272,7 @@ class RichProgressTracker:
             self._fallback.finish()
 
 
-def make_progress(total: int, description: str = ""):
+def make_progress(total: int, description: str = "") -> ProgressTracker:
     """返回一个进度条实例，优先使用 rich，美观友好；失败回退到文本版。
     用法：tracker = make_progress(n, "抓取文章:"); tracker.update(); tracker.finish()
     """

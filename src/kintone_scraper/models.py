@@ -18,8 +18,9 @@ class Article:
     last_updated: str = ""
     scraped_at: str = field(default_factory=lambda: datetime.now().isoformat())
     content_length: int = field(init=False)
+    image_paths: Optional[List[str]] = field(default=None, init=False)
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """计算内容长度"""
         self.content_length = len(self.content)
     
@@ -63,7 +64,7 @@ class Section:
     category_path: str = ""
     scraped_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """计算文章数量"""
         if not self.article_count:  # 只有当article_count为0时才自动计算
             self.article_count = len(self.articles)
@@ -105,11 +106,11 @@ class Category:
     sections: List[Section] = field(default_factory=list)
     total_articles: int = field(init=False, default=0)
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """计算总文章数"""
         self.total_articles = sum(section.article_count for section in self.sections)
-    
-    def add_section(self, section: Section):
+
+    def add_section(self, section: Section) -> None:
         """添加章节"""
         self.sections.append(section)
         self.total_articles += section.article_count
@@ -150,18 +151,19 @@ class ScrapingResult:
     failed_articles: int = 0
     categories: List[Category] = field(default_factory=list)
     articles: List[Article] = field(default_factory=list)
+    failed_details: List[str] = field(default_factory=list)
     start_time: str = field(default_factory=lambda: datetime.now().isoformat())
     end_time: str = ""
     duration: str = ""
     
-    def mark_completed(self):
+    def mark_completed(self) -> None:
         """标记抓取完成"""
         self.end_time = datetime.now().isoformat()
         start = datetime.fromisoformat(self.start_time)
         end = datetime.fromisoformat(self.end_time)
         self.duration = str(end - start)
-    
-    def add_article(self, article: Article, success: bool = True):
+
+    def add_article(self, article: Article, success: bool = True) -> None:
         """添加文章"""
         self.articles.append(article)
         if success:
@@ -190,4 +192,5 @@ class ScrapingResult:
             },
             'categories': [category.to_dict() for category in self.categories],
             'articles': [article.to_dict() for article in self.articles],
+            'failed_details': self.failed_details,
         }

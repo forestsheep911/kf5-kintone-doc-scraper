@@ -2,19 +2,18 @@
 
 import hashlib
 import logging
+import threading
 import mimetypes
 import os
-import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .config import (
-    DEFAULT_HEADERS, REQUEST_DELAY, REQUEST_TIMEOUT,
-    get_article_file_path, calculate_relative_path, BILIBILI_VIDEO_MODE
+    DEFAULT_HEADERS, REQUEST_DELAY, REQUEST_TIMEOUT, BILIBILI_VIDEO_MODE
 )
 from .utils import get_safe_filename, rate_limit
 
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 class ImageDownloader:
     """图片下载器"""
     
-    def __init__(self, base_url: str, output_dir: Path, try_external_images: bool = False, bilibili_mode: str = None):
+    def __init__(self, base_url: str, output_dir: Path, try_external_images: bool = False, bilibili_mode: Optional[str] = None):
         self.base_url = base_url
         self.output_dir = output_dir
         self.try_external_images = try_external_images  # 是否尝试下载外部图片
@@ -37,6 +36,9 @@ class ImageDownloader:
         # 创建session
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
+        self._thread_local = threading.local()
+        self._thread_local.session = self.session
+        self._lock = threading.Lock()
 
         # 跟踪已下载的图片和附件
         self.downloaded_images: Dict[str, str] = {}  # URL -> 本地文件名
@@ -53,14 +55,23 @@ class ImageDownloader:
         self.attachment_formats = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', 
                                  '.zip', '.rar', '.7z', '.txt', '.csv', '.json', '.xml'}
     
-    def _reset_download_state(self):
+    def _reset_download_state(self) -> None:
         """重置下载状态，清理所有缓存"""
         self.downloaded_images.clear()
         self.downloaded_attachments.clear()
         self.failed_downloads.clear()
         logger.debug("下载状态已重置")
-    
-    def _get_image_extension(self, url: str, content_type: str = None, content_preview: bytes = None) -> str:
+
+    def _get_thread_session(self) -> requests.Session:
+        """为当前线程提供独立的session"""
+        session = getattr(self._thread_local, 'session', None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(DEFAULT_HEADERS)
+            self._thread_local.session = session
+        return session
+
+    def _get_image_extension(self, url: str, content_type: Optional[str] = None, content_preview: Optional[bytes] = None) -> str:
         """获取图片文件扩展名"""
         # 首先尝试从URL获取扩展名
         parsed_url = urlparse(url)
@@ -92,7 +103,7 @@ class ImageDownloader:
         # 默认使用.jpg
         return '.jpg'
     
-    def _generate_filename(self, url: str, content_type: str = None, content_preview: bytes = None) -> str:
+    def _generate_filename(self, url: str, content_type: Optional[str] = None, content_preview: Optional[bytes] = None) -> str:
         """生成安全的文件名"""
         # 使用URL的hash作为文件名，避免重复和特殊字符问题
         url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()[:12]
@@ -135,7 +146,7 @@ class ImageDownloader:
             if parsed.netloc and parsed.netloc != base_domain:
                 # 检查是否是同一主域名的不同子域名
                 # 例如：files.kf5.com 和 cybozudev.kf5.com 都属于 kf5.com
-                def get_main_domain(domain):
+                def get_main_domain(domain: str) -> str:
                     parts = domain.split('.')
                     if len(parts) >= 2:
                         return '.'.join(parts[-2:])  # 取最后两部分作为主域名
@@ -192,20 +203,20 @@ class ImageDownloader:
         else:
             logger.debug(f"下载同域图片: {absolute_url}")
 
-        # 检查是否已经下载过
-        if absolute_url in self.downloaded_images:
-            cached_filename = self.downloaded_images[absolute_url]
-            logger.debug(f"使用缓存的图片: {absolute_url} -> {cached_filename}")
-            return cached_filename
+        # 检查缓存和失败记录
+        with self._lock:
+            cached_filename = self.downloaded_images.get(absolute_url)
+            if cached_filename:
+                logger.debug(f"使用缓存的图片: {absolute_url} -> {cached_filename}")
+                return cached_filename
+            if absolute_url in self.failed_downloads:
+                logger.debug(f"跳过已知失败的图片: {absolute_url}")
+                return None
 
-        # 检查是否下载失败过
-        if absolute_url in self.failed_downloads:
-            logger.debug(f"跳过已知失败的图片: {absolute_url}")
-            return None
-        
         # 尝试下载图片（不重试，避免浪费时间）
+        session = self._get_thread_session()
         max_retries = 0
-        for attempt in range(max_retries + 1):
+        for _ in range(max_retries + 1):
             try:
                 logger.info(f"下载图片: {absolute_url}")
                 
@@ -242,7 +253,7 @@ class ImageDownloader:
                     logger.debug(f"外部图片请求完成，状态码: {response.status_code}")
                 else:
                     # 使用session下载同域图片
-                    response = self.session.get(absolute_url, timeout=REQUEST_TIMEOUT, stream=True)
+                    response = session.get(absolute_url, timeout=REQUEST_TIMEOUT, stream=True)
                     logger.debug(f"内部图片请求完成，状态码: {response.status_code}")
                 
                 response.raise_for_status()
@@ -263,7 +274,8 @@ class ImageDownloader:
                 # 对于外部图床，更宽松的验证 - 只要URL看起来像图片就尝试下载
                 if not (is_image_content_type or has_image_extension or is_kf5_attachment or is_external):
                     logger.warning(f"URL不是图片: {absolute_url} (Content-Type: {content_type}, 路径: {url_path})")
-                    self.failed_downloads.add(absolute_url)
+                    with self._lock:
+                        self.failed_downloads.add(absolute_url)
                     return None
                 
                 # 如果是外部图床但Content-Type不是image/*，记录但继续尝试
@@ -300,7 +312,8 @@ class ImageDownloader:
                                         logger.warning(f"外部图床文件头不匹配，但仍尝试保存: {absolute_url} (文件头: {content_preview[:10].hex()})")
                                     else:
                                         logger.warning(f"文件不是图片格式: {absolute_url} (文件头: {content_preview[:10].hex()})")
-                                        self.failed_downloads.add(absolute_url)
+                                        with self._lock:
+                                            self.failed_downloads.add(absolute_url)
                                         return None
                                 else:
                                     logger.info(f"通过文件头确认为图片: {absolute_url}")
@@ -315,8 +328,10 @@ class ImageDownloader:
                         f.write(chunk)
                 
                 logger.debug(f"图片保存成功: {filename}")
-                self.downloaded_images[absolute_url] = filename
-                
+                with self._lock:
+                    self.downloaded_images[absolute_url] = filename
+                    self.failed_downloads.discard(absolute_url)
+
                 # 控制下载速度
                 rate_limit(REQUEST_DELAY * 0.5)  # 图片下载稍快一些
                 
@@ -325,7 +340,8 @@ class ImageDownloader:
             except (requests.RequestException, Exception) as e:
                 # 不重试，直接记录失败
                 logger.error(f"图片下载失败: {absolute_url} - {str(e)}")
-                self.failed_downloads.add(absolute_url)
+                with self._lock:
+                    self.failed_downloads.add(absolute_url)
                 return None
 
     def _extract_github_url_from_license(self, license_url: str, link_text: str) -> Optional[str]:
@@ -382,19 +398,20 @@ class ImageDownloader:
         # 转换为绝对URL
         absolute_url = urljoin(self.base_url, attachment_url)
         
-        # 检查是否已经下载过
-        if absolute_url in self.downloaded_attachments:
-            return self.downloaded_attachments[absolute_url]
+        # 检查缓存和失败记录
+        with self._lock:
+            cached = self.downloaded_attachments.get(absolute_url)
+            if cached:
+                return cached
+            if absolute_url in self.failed_downloads:
+                return None
 
-        # 检查是否下载失败过
-        if absolute_url in self.failed_downloads:
-            return None
-        
         try:
             logger.info(f"下载附件: {absolute_url}")
             
+            session = self._get_thread_session()
             # 下载附件
-            response = self.session.get(absolute_url, timeout=REQUEST_TIMEOUT, stream=True)
+            response = session.get(absolute_url, timeout=REQUEST_TIMEOUT, stream=True)
             response.raise_for_status()
             
             # 生成基于URL的唯一文件名，避免重复下载相同文件
@@ -479,8 +496,10 @@ class ImageDownloader:
                         f.write(chunk)
             
             logger.debug(f"附件保存成功: {filepath.name}")
-            self.downloaded_attachments[absolute_url] = filepath.name
-            
+            with self._lock:
+                self.downloaded_attachments[absolute_url] = filepath.name
+                self.failed_downloads.discard(absolute_url)
+
             # 控制下载速度
             rate_limit(REQUEST_DELAY)
             
@@ -488,11 +507,13 @@ class ImageDownloader:
             
         except requests.RequestException as e:
             logger.error(f"下载附件失败 {absolute_url}: {e}")
-            self.failed_downloads.add(absolute_url)
+            with self._lock:
+                self.failed_downloads.add(absolute_url)
             return None
         except Exception as e:
             logger.error(f"保存附件失败 {absolute_url}: {e}")
-            self.failed_downloads.add(absolute_url)
+            with self._lock:
+                self.failed_downloads.add(absolute_url)
             return None
     
     def process_html_images(self, html_content: str, article_title: str = "", article_url: str = "", article_category: str = "", current_section_category: str = "") -> Tuple[str, List[str]]:
@@ -583,7 +604,7 @@ class ImageDownloader:
         iframes = soup.find_all('iframe')
         for iframe in iframes:
             src = iframe.get('src', '')
-            if 'bilibili.com' in src or 'player.bilibili.com' in src:
+            if isinstance(src, str) and ('bilibili.com' in src or 'player.bilibili.com' in src):
                 # 提取视频信息
                 import re
                 bv_match = re.search(r'bvid=([^&]+)', src)
@@ -648,14 +669,16 @@ class ImageDownloader:
             unique_urls = set()
             for img in img_tags:
                 src = img.get('src')
-                if src:
+                if src and isinstance(src, str):
                     unique_urls.add(src)
             
             logger.info(f"文章 '{article_title}' 中发现 {len(img_tags)} 个img标签，{len(unique_urls)} 个不同图片")
             
             for img in img_tags:
+                if not isinstance(img, Tag):
+                    continue
                 src = img.get('src')
-                if not src:
+                if not src or not isinstance(src, str):
                     continue
 
                 # 下载图片
@@ -665,8 +688,10 @@ class ImageDownloader:
                 # 如果下载失败但图片已在缓存中，使用缓存的文件名（容错处理）
                 if not filename:
                     absolute_url = urljoin(self.base_url, src)
-                    if absolute_url in self.downloaded_images:
-                        filename = self.downloaded_images[absolute_url]
+                    with self._lock:
+                        cached_name = self.downloaded_images.get(absolute_url)
+                    if cached_name:
+                        filename = cached_name
                         logger.debug(f"使用缓存的图片文件名: {src} -> {filename}")
 
                 if filename:
@@ -864,58 +889,153 @@ class ImageDownloader:
                                 
                                 logger.debug(f"保持外部链接: {href}")
         
+        # 优化目录结构并美化样式
+        self._enhance_table_of_contents(soup)
         # 为标题添加id属性以支持锚点导航
         self._add_heading_ids(soup)
         
         return str(soup), downloaded_files
-    
-    def _add_heading_ids(self, soup):
-        """为标题标签添加id属性以支持锚点导航"""
-        import re
-        
-        # 定义标题与步骤ID的映射
-        step_mapping = {
-            '前言': 'step1',
-            '视频学习': 'step8', 
-            '功能梳理': 'step2',
-            'Demo演示': 'step3',
-            '效果图': 'step3',  # 效果图可能是Demo演示的别名
-            '如何实现？': 'step4',
-            '如何实现': 'step4',
-            '代码分享': 'step5',
-            '代码共享': 'step5',
-            'Demo代码使用条款': 'step6',
-            '注意事项': 'step7',
-            '最后': 'step9'
-        }
-        
-        # 查找所有h1-h6标题
-        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-            heading_text = heading.get_text().strip()
-            
-            # 清理标题文本，移除特殊字符
-            clean_text = re.sub(r'[？?！!。.]', '', heading_text)
-            
-            # 查找匹配的步骤ID
-            step_id = None
-            for key, value in step_mapping.items():
-                if key in clean_text:
-                    step_id = value
+
+    def _enhance_table_of_contents(self, soup: BeautifulSoup) -> None:
+        """将文章开头的 Index/目录 转换为卡片式 TOC"""
+        try:
+            root = soup.find('div', class_='original-content')
+            if not root:
+                return
+
+            heading = None
+            for tag_name in ['h1', 'h2', 'h3', 'h4']:
+                candidates = root.find_all(tag_name)
+                for candidate in candidates:
+                    text = candidate.get_text().strip().lower()
+                    if text in ('index', '目录'):
+                        heading = candidate
+                        break
+                if heading:
                     break
+            if not heading:
+                return
+
+            toc_list = heading.find_next_sibling()
+            while toc_list is not None and getattr(toc_list, 'name', None) is None:
+                toc_list = toc_list.find_next_sibling()
+            if toc_list and toc_list.name == 'div':
+                possible_ul = toc_list.find('ul', recursive=False)
+                if possible_ul:
+                    toc_list = possible_ul
+            if not toc_list or toc_list.name != 'ul':
+                return
+
+            def normalize_ul(ul_tag: BeautifulSoup) -> None:
+                for li in list(ul_tag.find_all('li', recursive=False)):
+                    if not li or getattr(li, 'name', None) != 'li':
+                        continue
+                    direct_ps = li.find_all('p', recursive=False)
+                    if direct_ps:
+                        primary = direct_ps[0]
+                        main_link = primary.find('a', recursive=False) or primary.find('a')
+                        if main_link:
+                            main_link.extract()
+                            li.insert(0, main_link)
+                        primary.decompose()
+                        if len(direct_ps) > 1:
+                            sub_ul = soup.new_tag('ul', attrs={'class': 'toc-sub'})
+                            for sub_p in direct_ps[1:]:
+                                sub_link = sub_p.find('a')
+                                if sub_link:
+                                    sub_link.extract()
+                                    sub_li = soup.new_tag('li')
+                                    sub_li.append(sub_link)
+                                    sub_ul.append(sub_li)
+                                sub_p.decompose()
+                            if sub_ul.contents:
+                                li.append(sub_ul)
+                    for child_ul in li.find_all('ul', recursive=False):
+                        classes = set(child_ul.get('class', []))
+                        classes.update({'toc-sub'})
+                        child_ul['class'] = list(classes)
+                        normalize_ul(child_ul)
+
+            normalize_ul(toc_list)
+
+            card = soup.new_tag('div', attrs={'class': 'toc-card'})
+            title = soup.new_tag('div', attrs={'class': 'toc-title'})
+            title.string = heading.get_text(strip=True)
+            body = soup.new_tag('div', attrs={'class': 'toc-body'})
+            card.append(title)
+            card.append(body)
+
+            classes = set(toc_list.get('class', []))
+            classes.update({'anchor-link', 'toc-list-root'})
+            classes.discard('list-paddingleft-2')
+            toc_list['class'] = list(classes)
+            body.append(toc_list.extract())
+            heading.replace_with(card)
+        except Exception as exc:
+            logger.debug(f"目录优化失败，保持原状: {exc}")
+
+    def _add_heading_ids(self, soup: BeautifulSoup) -> None:
+        """为标题标签添加id属性以支持锚点导航，并同步更新TOC链接"""
+        # 构建标题文本到生成ID的映射，用于更新TOC链接
+        text_to_id_mapping = {}
+        
+        # 查找所有h1-h6标题，按出现顺序编号
+        headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+        counter = 1
+        
+        for heading in headings:
+            # 跳过已有ID的标题
+            if heading.get('id'):
+                continue
+                
+            heading_text = heading.get_text().strip()
+            if not heading_text:
+                continue
             
-            # 如果找到匹配的步骤ID，添加id属性
-            if step_id and not heading.get('id'):
-                heading['id'] = step_id
-                logger.debug(f"为标题 '{heading_text}' 添加id: {step_id}")
+            # 生成简单的编号ID
+            generated_id = f"section-{counter}"
+            counter += 1
+            
+            heading['id'] = generated_id
+            # 记录标题文本和生成的ID映射，用于更新TOC链接
+            text_to_id_mapping[heading_text] = generated_id
+            logger.debug(f"为标题 '{heading_text}' 添加id: {generated_id}")
+        
+        # 更新TOC中的链接，使其与标题ID匹配
+        self._update_toc_links(soup, text_to_id_mapping)
+    
+    
+    def _update_toc_links(self, soup: BeautifulSoup, text_to_step_mapping: dict) -> None:
+        """更新TOC中的锚点链接，使其与标题ID匹配"""
+        # 查找所有TOC相关的链接
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            # 只处理锚点链接（以#开头）
+            if not href.startswith('#'):
+                continue
+            
+            link_text = link.get_text().strip()
+            
+            # 如果链接文本与某个标题匹配，更新href
+            if link_text in text_to_step_mapping:
+                new_step_id = text_to_step_mapping[link_text]
+                old_href = href
+                new_href = f'#{new_step_id}'
+                link['href'] = new_href
+                logger.debug(f"更新TOC链接: '{link_text}' 从 '{old_href}' 改为 '{new_href}'")
     
     def get_download_stats(self) -> Dict[str, int]:
         """获取下载统计信息"""
+        with self._lock:
+            images = len(self.downloaded_images)
+            attachments = len(self.downloaded_attachments)
+            failed = len(self.failed_downloads)
         return {
-            'images_downloaded': len(self.downloaded_images),
-            'attachments_downloaded': len(self.downloaded_attachments),
-            'total_downloaded': len(self.downloaded_images) + len(self.downloaded_attachments),
-            'failed': len(self.failed_downloads),
-            'total_attempted': len(self.downloaded_images) + len(self.downloaded_attachments) + len(self.failed_downloads)
+            'images_downloaded': images,
+            'attachments_downloaded': attachments,
+            'total_downloaded': images + attachments,
+            'failed': failed,
+            'total_attempted': images + attachments + failed
         }
     
     def cleanup_unused_images(self, used_images: Set[str]) -> int:
@@ -945,7 +1065,7 @@ class HTMLGenerator:
         self.html_dir = output_dir / "html"
         self.html_dir.mkdir(parents=True, exist_ok=True)
     
-    def generate_article_html(self, article, html_content: str, images: List[str] = None) -> Path:
+    def generate_article_html(self, article: Any, html_content: str, images: Optional[List[str]] = None) -> Optional[Path]:
         """生成单个文章的HTML文件"""
         if not article.title:
             return None
@@ -987,6 +1107,7 @@ class HTMLGenerator:
         css_path = base_path + "css/article.css"
         
         # 准备元数据
+        images_list = getattr(article, 'image_paths', None) or []
         metadata = {
             'title': article.title,
             'category': getattr(article, 'category', ''),
@@ -994,8 +1115,10 @@ class HTMLGenerator:
             'last_updated': getattr(article, 'last_updated', ''),
             'scraped_at': getattr(article, 'scraped_at', ''),
             'content_length': f"{getattr(article, 'content_length', 0)} 字符",
-            'images_count': len(getattr(article, 'image_paths', []))
+            'images_count': len(images_list)
         }
+
+        content_html = html_content or getattr(article, 'html_content', '') or ''
 
         # 填充模板
         final_html = html_template.replace('{title}', str(metadata['title']))
@@ -1005,7 +1128,7 @@ class HTMLGenerator:
         final_html = final_html.replace('{scraped_at}', str(metadata['scraped_at']))
         final_html = final_html.replace('{content_length}', str(metadata['content_length']))
         final_html = final_html.replace('{images_count}', str(metadata['images_count']))
-        final_html = final_html.replace('{content}', str(html_content))
+        final_html = final_html.replace('{content}', content_html)
         final_html = final_html.replace('{index_link}', index_link)
         final_html = final_html.replace('{css_path}', css_path)
         
@@ -1075,11 +1198,11 @@ class HTMLGenerator:
         function inferLanguage(text){
           const t = (text || '').trim();
           if (!t) return null;
-          if (/^\{[\s\S]*\}$/.test(t) || /^\[/.test(t)) { try { JSON.parse(t); return 'json'; } catch(e){} }
-          if (/<\/?[a-zA-Z]/.test(t)) return 'markup';
-          if (/^(\$ |curl |#\!\/|sudo |apt |yum |brew )/m.test(t)) return 'bash';
-          if (/(import |from |def |class |print\(|lambda )/.test(t)) return 'python';
-          if (/(const |let |var |=>|function\s+\w+\()/.test(t)) return 'javascript';
+          if (/^\\{[\\s\\S]*\\}$/.test(t) || /^\\[/.test(t)) { try { JSON.parse(t); return 'json'; } catch(e){} }
+          if (/<\\/?[a-zA-Z]/.test(t)) return 'markup';
+          if (/^(\\$ |curl |#!\\/|sudo |apt |yum |brew )/m.test(t)) return 'bash';
+          if (/(import |from |def |class |print\\(|lambda )/.test(t)) return 'python';
+          if (/(const |let |var |=>|function\\s+\\w+\\()/.test(t)) return 'javascript';
           if (/(SELECT |INSERT |UPDATE |DELETE |CREATE TABLE)/i.test(t)) return 'sql';
           return null;
         }
@@ -1097,12 +1220,12 @@ class HTMLGenerator:
           pres.forEach(pre => {
             let lang = null;
             const cls = pre.getAttribute('class') || '';
-            const m = cls.match(/brush:([\w-]+)/i);
+            const m = cls.match(/brush:([\\w-]+)/i);
             if (m) lang = mapBrushToPrism(m[1]);
             let code = pre.querySelector('code');
             if (code) {
               const codeCls = code.getAttribute('class') || '';
-              const mm = codeCls.match(/language-([\w-]+)/i);
+              const mm = codeCls.match(/language-([\\w-]+)/i);
               if (mm) lang = mm[1];
             }
             if (!lang) {
@@ -1170,10 +1293,92 @@ class HTMLGenerator:
         }
       }, false);
     </script>
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        try {
+          var root = document.querySelector('.original-content');
+          if (!root) return;
+          var heading = root.querySelector('h1, h2, h3, h4');
+          if (!heading) return;
+          var headingText = (heading.textContent || heading.innerText || '').trim();
+          if (!headingText || !/^(index|目录)$/i.test(headingText)) return;
+
+          var tocList = heading.nextElementSibling;
+          while (tocList && tocList.nodeType === 3) {
+            tocList = tocList.nextElementSibling;
+          }
+          // 部分页面的目录是包裹在div里的情况
+          if (tocList && tocList.tagName === 'DIV') {
+            var firstUl = tocList.querySelector('ul');
+            if (firstUl) tocList = firstUl;
+          }
+          if (!tocList || tocList.tagName !== 'UL') return;
+
+          var card = document.createElement('div');
+          card.className = 'toc-card';
+          var title = document.createElement('div');
+          title.className = 'toc-title';
+          title.textContent = headingText;
+          var body = document.createElement('div');
+          body.className = 'toc-body';
+
+          card.appendChild(title);
+          card.appendChild(body);
+
+          root.replaceChild(card, heading);
+          body.appendChild(tocList);
+          if (!tocList.classList.contains('anchor-link')) {
+            tocList.classList.add('anchor-link');
+          }
+          tocList.classList.add('toc-list-root');
+
+          var normalize = function (list) {
+            Array.prototype.slice.call(list.children).forEach(function (li) {
+              if (!li || li.nodeType !== 1) return;
+              var directPs = Array.prototype.slice.call(li.querySelectorAll(':scope > p'));
+              if (directPs.length) {
+                var primary = directPs.shift();
+                if (primary) {
+                  var mainLink = primary.querySelector('a');
+                  if (mainLink) {
+                    li.insertBefore(mainLink, primary);
+                  }
+                  primary.remove();
+                }
+                if (directPs.length) {
+                  var sub = document.createElement('ul');
+                  sub.classList.add('toc-sub');
+                  directPs.forEach(function (p) {
+                    var subLink = p.querySelector('a');
+                    if (subLink) {
+                      var subLi = document.createElement('li');
+                      subLi.appendChild(subLink);
+                      sub.appendChild(subLi);
+                    }
+                    p.remove();
+                  });
+                  if (sub.children.length) {
+                    li.appendChild(sub);
+                  }
+                }
+              }
+              Array.prototype.slice.call(li.querySelectorAll(':scope > ul')).forEach(function (childUl) {
+                childUl.classList.add('toc-sub');
+                normalize(childUl);
+              });
+            });
+          };
+
+          normalize(tocList);
+        } catch (err) {
+          console.warn('TOC enhancement skipped:', err);
+        }
+      });
+    </script>
 </body>
 </html>'''
     
-    def _copy_css_files(self):
+    def _copy_css_files(self) -> None:
         """复制CSS文件到输出目录"""
         import shutil
         from pathlib import Path
@@ -1211,7 +1416,7 @@ class HTMLGenerator:
             logger.warning(f"补全本地文章列表失败，使用原始列表: {e}")
         
         # 生成分类统计
-        category_stats = {}
+        category_stats: Dict[str, int] = {}
         for article in articles:
             cat = getattr(article, 'category', '') or '其他'
             category_stats[cat] = category_stats.get(cat, 0) + 1
@@ -1244,7 +1449,7 @@ class HTMLGenerator:
         - 若传入列表中没有该 id，则创建一个轻量“文章对象”补上
         """
         from types import SimpleNamespace
-        import re, os
+        import re
         html_root = self.html_dir
         if not html_root.exists():
             return articles
@@ -1293,6 +1498,7 @@ class HTMLGenerator:
     <!-- 现代化图标字体 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <link rel="stylesheet" href="css/index.css">
+    <link rel="stylesheet" href="css/article.css">
     <!-- Prism syntax highlighting -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs/plugins/line-numbers/prism-line-numbers.min.css">
@@ -1416,11 +1622,11 @@ class HTMLGenerator:
             function inferLanguage(text){
               const t = (text || '').trim();
               if (!t) return null;
-              if (/^\{[\s\S]*\}$/.test(t) || /^\[/.test(t)) { try { JSON.parse(t); return 'json'; } catch(e){} }
-              if (/<\/?[a-zA-Z]/.test(t)) return 'markup';
-              if (/^(\$ |curl |#\!\/|sudo |apt |yum |brew )/m.test(t)) return 'bash';
-              if (/(import |from |def |class |print\(|lambda )/.test(t)) return 'python';
-              if (/(const |let |var |=>|function\s+\w+\()/.test(t)) return 'javascript';
+              if (/^\\{[\\s\\S]*\\}$/.test(t) || /^\\[/.test(t)) { try { JSON.parse(t); return 'json'; } catch(e){} }
+              if (/<\\/?[a-zA-Z]/.test(t)) return 'markup';
+              if (/^(\\$ |curl |#!\\/|sudo |apt |yum |brew )/m.test(t)) return 'bash';
+              if (/(import |from |def |class |print\\(|lambda )/.test(t)) return 'python';
+              if (/(const |let |var |=>|function\\s+\\w+\\()/.test(t)) return 'javascript';
               if (/(SELECT |INSERT |UPDATE |DELETE |CREATE TABLE)/i.test(t)) return 'sql';
               return null;
             }
@@ -1438,12 +1644,12 @@ class HTMLGenerator:
               pres.forEach(pre => {
                 let lang = null;
                 const cls = pre.getAttribute('class') || '';
-                const m = cls.match(/brush:([\w-]+)/i);
+                const m = cls.match(/brush:([\\w-]+)/i);
                 if (m) lang = mapBrushToPrism(m[1]);
                 let code = pre.querySelector('code');
                 if (code) {
                   const codeCls = code.getAttribute('class') || '';
-                  const mm = codeCls.match(/language-([\w-]+)/i);
+                  const mm = codeCls.match(/language-([\\w-]+)/i);
                   if (mm) lang = mm[1];
                 }
                 if (!lang) {
@@ -1618,7 +1824,7 @@ class HTMLGenerator:
                 copyBtn.onclick = function() {
                     const codeText = pre.textContent || pre.innerText;
                     // 移除按钮文本
-                    const textToCopy = codeText.replace(/^(换行|不换行)?\s*复制\s*/, '');
+                    const textToCopy = codeText.replace(/^(换行|不换行)?\\s*复制\\s*/, '');
                     
                     copyToClipboard(textToCopy, function(success) {
                         if (success) {
@@ -1720,15 +1926,15 @@ class HTMLGenerator:
     def _generate_navigation_tree(self, articles: List) -> str:
         """生成Vue风格的导航树HTML"""
         # 按分类组织文章
-        categories = {}
+        categories: Dict[str, List] = {}
         for article in articles:
             category = getattr(article, 'category', '') or '其他'
             if category not in categories:
                 categories[category] = []
             categories[category].append(article)
-        
+
         # 组织成层级结构
-        hierarchy = {}
+        hierarchy: Dict[str, Any] = {}
         for category, articles_list in categories.items():
             parts = (category or '其他').split('/')
             if len(parts) >= 2:
@@ -1750,7 +1956,7 @@ class HTMLGenerator:
         ]
         
         # 按照指定顺序排序分类
-        def sort_categories(item):
+        def sort_categories(item) -> int:
             category = item[0]
             try:
                 return category_order.index(category)
@@ -1827,7 +2033,7 @@ class HTMLGenerator:
         
         return html_content
     
-    def _extract_article_id(self, article) -> str:
+    def _extract_article_id(self, article: Any) -> str:
         """从文章URL中提取ID"""
         import re
         if hasattr(article, 'url') and article.url:
@@ -1997,7 +2203,7 @@ class HTMLGenerator:
                 
                 # 替换所有article://链接
                 import re
-                def replace_article_link(match):
+                def replace_article_link(match) -> str:
                     article_id = match.group(1)
                     if article_id in article_map:
                         # 计算相对路径
@@ -2077,7 +2283,7 @@ class HTMLGenerator:
             original_content = content
             
             # 替换链接的函数
-            def replace_link(match):
+            def replace_link(match) -> str:
                 article_id = match.group(1)
                 if article_id in article_map:
                     return f'href="{article_map[article_id]}"'

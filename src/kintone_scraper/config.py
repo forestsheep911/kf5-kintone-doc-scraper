@@ -10,6 +10,7 @@ REQUEST_TIMEOUT = 30
 REQUEST_DELAY = 0.5  # 请求间隔（秒）
 MAX_RETRIES = 3
 BATCH_SIZE = 10  # 每批处理的文章数量
+ARTICLE_WORKERS = 8  # 默认用于文章抓取的并发线程数
 
 # 用户代理
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
