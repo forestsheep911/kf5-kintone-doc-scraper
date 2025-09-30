@@ -137,6 +137,9 @@ logs/
 Thumbs.db
 config/kf5_api.toml
 
+# Ignore folders starting with kintone_cndev_doc
+kintone_cndev_doc*/
+
 # IDEs
 .vscode/
 .idea/
